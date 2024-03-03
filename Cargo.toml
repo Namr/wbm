@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
 clap_derive = { version = "4.0" }
-nix = { version = "0.28.0", features = ["ptrace"] }
+nix = { version = "0.28.0", features = ["ptrace", "fs"] }
