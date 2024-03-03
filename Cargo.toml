@@ -9,3 +9,5 @@ edition = "2021"
 clap = { version = "4.0", features = ["derive"] }
 clap_derive = { version = "4.0" }
 nix = { version = "0.28.0", features = ["ptrace", "fs"] }
+num-traits = "0.2"
+num-derive = "0.4"
