@@ -4,9 +4,10 @@ use nix::{
     unistd::Pid,
 };
 use num_traits::FromPrimitive;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::fs::File;
+use std::fs::{read_dir, File};
 use std::io::{prelude::*, BufReader};
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -60,10 +61,20 @@ struct Socket {
 #[derive(Debug)]
 struct SocketFdParseError;
 
+#[derive(Debug)]
+struct OsStringConvertError;
+
 impl Error for SocketFdParseError {}
 impl fmt::Display for SocketFdParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Could not parse process file system")
+    }
+}
+
+impl Error for OsStringConvertError {}
+impl fmt::Display for OsStringConvertError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not convert OsString to String")
     }
 }
 
@@ -102,9 +113,30 @@ fn describe_fd(pid: Pid, fd: u64) -> Option<FileDescriptor> {
     }
 }
 
-fn describe_open_sockets(pid: Pid) -> Result<Vec<Socket>, Box<dyn Error>> {
-    let mut sockets: Vec<Socket> = vec![];
+fn describe_all_open_sockets(
+    socket_map: &mut HashMap<u64, HashMap<i32, Socket>>,
+) -> Result<(), Box<dyn Error>> {
+    let process_dir_paths = read_dir("/proc/")?;
+    for maybe_path in process_dir_paths {
+        let path = maybe_path?;
+        if path.file_type()?.is_dir() {
+            let path_str = match path.file_name().into_string() {
+                Ok(str) => str,
+                Err(_) => return Err(Box::new(OsStringConvertError {})),
+            };
+            match path_str.parse::<i32>() {
+                Ok(pid) if pid != 0 => drop(describe_open_sockets(Pid::from_raw(pid), socket_map)),
+                _ => (),
+            }
+        }
+    }
+    Ok(())
+}
 
+fn describe_open_sockets(
+    pid: Pid,
+    socket_map: &mut HashMap<u64, HashMap<i32, Socket>>,
+) -> Result<(), Box<dyn Error>> {
     // open /proc/net/tcp and parse all entries into Sockets
     let s_path = format!("/proc/{}/net/tcp", pid.as_raw());
     let path = Path::new(s_path.as_str());
@@ -135,12 +167,20 @@ fn describe_open_sockets(pid: Pid) -> Result<Vec<Socket>, Box<dyn Error>> {
         // inode is entry 9
         let inode: u64 = split_line[9].parse()?;
 
-        sockets.push(Socket {
+        // insert into socket hashmap
+        let socket = Socket {
             inode,
             s_type: SocketType::TCP,
             local_ip,
             remote_ip,
-        });
+        };
+        if !socket_map.contains_key(&inode) {
+            socket_map.insert(inode, HashMap::new());
+        }
+        socket_map
+            .get_mut(&inode)
+            .ok_or("could not lookup socket by inode")?
+            .insert(pid.as_raw(), socket);
     }
 
     // open /proc/net/udp and parse all entries into Sockets
@@ -173,25 +213,35 @@ fn describe_open_sockets(pid: Pid) -> Result<Vec<Socket>, Box<dyn Error>> {
         // inode is entry 9
         let inode: u64 = split_line[9].parse()?;
 
-        sockets.push(Socket {
+        // insert into socket hashmap
+        let socket = Socket {
             inode,
             s_type: SocketType::UDP,
             local_ip,
             remote_ip,
-        });
+        };
+        if !socket_map.contains_key(&inode) {
+            socket_map.insert(inode, HashMap::new());
+        }
+        socket_map
+            .get_mut(&inode)
+            .ok_or("could not lookup socket by inode")?
+            .insert(pid.as_raw(), socket);
     }
 
-    return Ok(sockets);
+    Ok(())
 }
 
 fn main() {
     let args = Args::parse();
     let pid = Pid::from_raw(args.pid);
-    // hashmap {inode -> {pid -> sockets}
-    let sockets =
-        describe_open_sockets(pid).expect("Failed to parse the open sockets on this process");
-    ptrace::attach(pid).unwrap_or_else(|_| panic!("Could not attach to process {}", args.pid));
 
+    // (note: amoussa) this is really expensive and probably should have a flag to skip it
+    let mut sockets: HashMap<u64, HashMap<i32, Socket>> = HashMap::new();
+    describe_all_open_sockets(&mut sockets)
+        .expect("Failed to parse the open sockets on this process");
+
+    ptrace::attach(pid).unwrap_or_else(|_| panic!("Could not attach to process {}", args.pid));
     execute_after_stopped(pid, || {
         ptrace::syscall(pid, None).unwrap_or_else(|_| {
             panic!("Failed to wait for process {} to issue a syscall", args.pid)
@@ -203,10 +253,12 @@ fn main() {
                         describe_fd(pid, regs.rdi).expect("Failed to get fd stats for process");
                     println!("process is waiting for a Read operation on file descriptor {} which is a {:?}", regs.rdi, fd.fd_type);
                     if fd.fd_type == FdType::Socket {
-                        match sockets.iter().find(|s| s.inode == fd.inode) {
-                                Some(socket) => println!("socket is trying to read from ip: {} using {:?}", socket.remote_ip, socket.s_type),
-                                _ => println!("Socket is reading from something we didn't find in the process filesystem..."),
-                            }
+                        // if its a socket, lets find and print more information about it
+                        let socket = sockets.get(&fd.inode).unwrap().get(&pid.as_raw()).unwrap();
+                        println!(
+                            "socket is trying to read from ip: {} using {:?}",
+                            socket.remote_ip, socket.s_type
+                        );
                     }
                 }
                 Some(other) => println!("process is waiting for syscall {:?}", other),
