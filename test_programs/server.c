@@ -8,7 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define PORT 3500
+#define PORT 6969
 
 int main(int argc, char** argv) {
   int n = 3;
@@ -52,7 +52,6 @@ int main(int argc, char** argv) {
     }
 
     // close(clientfd);
-    printf("closed connection with client, waiting for another client to connect\n");
     sleep(1);
   }
 }

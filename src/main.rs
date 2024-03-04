@@ -44,7 +44,7 @@ enum SocketType {
     UDP,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct SocketAddress {
     addr: Ipv4Addr,
     port: u16,
@@ -52,6 +52,7 @@ struct SocketAddress {
 
 #[derive(Debug, Copy, Clone)]
 struct Socket {
+    owning_pid: i32,
     inode: u64,
     s_type: SocketType,
     local_ip: SocketAddress,
@@ -113,10 +114,9 @@ fn describe_fd(pid: Pid, fd: u64) -> Option<FileDescriptor> {
     }
 }
 
-fn describe_all_open_sockets(
-    socket_map: &mut HashMap<u64, HashMap<i32, Socket>>,
-) -> Result<(), Box<dyn Error>> {
-    let process_dir_paths = read_dir("/proc/")?;
+fn find_all_pids_serving_address(address: SocketAddress) -> Result<Vec<i32>, Box<dyn Error>> {
+    let mut pids = vec![];
+    let process_dir_paths = read_dir("/proc")?;
     for maybe_path in process_dir_paths {
         let path = maybe_path?;
         if path.file_type()?.is_dir() {
@@ -125,23 +125,57 @@ fn describe_all_open_sockets(
                 Err(_) => return Err(Box::new(OsStringConvertError {})),
             };
             match path_str.parse::<i32>() {
-                Ok(pid) if pid != 0 => drop(describe_open_sockets(Pid::from_raw(pid), socket_map)),
+                Ok(pid) => {
+                    // check all fds for this pid
+                    let fd_paths = read_dir(format!("/proc/{}/fd", pid))?;
+                    for maybe_fd_path in fd_paths {
+                        let fd_path = maybe_fd_path?;
+                        let fd_str = match fd_path.file_name().into_string() {
+                            Ok(str) => str,
+                            Err(_) => return Err(Box::new(OsStringConvertError {})),
+                        };
+                        match fd_str.parse::<u64>() {
+                            Ok(fd) => {
+                                let ppid = Pid::from_raw(pid);
+                                let maybe_fd = describe_fd(ppid, fd);
+                                if maybe_fd.is_some() && maybe_fd.unwrap().fd_type == FdType::Socket
+                                {
+                                    let sockets = describe_open_sockets(ppid);
+                                    if sockets.is_ok() {
+                                        let socket = sockets
+                                            .unwrap()
+                                            .into_iter()
+                                            .find(|s| s.inode == maybe_fd.unwrap().inode)
+                                            .ok_or(
+                                                "error finding socket with corresponding fd inode",
+                                            );
+                                        if socket.is_ok() {
+                                            if socket.unwrap().local_ip == address {
+                                                pids.push(pid);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                    // if fd matches inode add it to the list
+                }
                 _ => (),
             }
         }
     }
-    Ok(())
+    Ok(pids)
 }
 
-fn describe_open_sockets(
-    pid: Pid,
-    socket_map: &mut HashMap<u64, HashMap<i32, Socket>>,
-) -> Result<(), Box<dyn Error>> {
+fn describe_open_sockets(pid: Pid) -> Result<Vec<Socket>, Box<dyn Error>> {
     // open /proc/net/tcp and parse all entries into Sockets
     let s_path = format!("/proc/{}/net/tcp", pid.as_raw());
     let path = Path::new(s_path.as_str());
     let tcp_file = File::open(path)?;
     let tcp_reader = BufReader::new(tcp_file);
+    let mut sockets: Vec<Socket> = vec![];
 
     for maybe_line in tcp_reader.lines() {
         let line = maybe_line?;
@@ -169,18 +203,13 @@ fn describe_open_sockets(
 
         // insert into socket hashmap
         let socket = Socket {
+            owning_pid: pid.as_raw(),
             inode,
             s_type: SocketType::TCP,
             local_ip,
             remote_ip,
         };
-        if !socket_map.contains_key(&inode) {
-            socket_map.insert(inode, HashMap::new());
-        }
-        socket_map
-            .get_mut(&inode)
-            .ok_or("could not lookup socket by inode")?
-            .insert(pid.as_raw(), socket);
+        sockets.push(socket);
     }
 
     // open /proc/net/udp and parse all entries into Sockets
@@ -215,53 +244,61 @@ fn describe_open_sockets(
 
         // insert into socket hashmap
         let socket = Socket {
+            owning_pid: pid.as_raw(),
             inode,
             s_type: SocketType::UDP,
             local_ip,
             remote_ip,
         };
-        if !socket_map.contains_key(&inode) {
-            socket_map.insert(inode, HashMap::new());
-        }
-        socket_map
-            .get_mut(&inode)
-            .ok_or("could not lookup socket by inode")?
-            .insert(pid.as_raw(), socket);
+        sockets.push(socket);
     }
 
-    Ok(())
+    Ok(sockets)
 }
 
-fn main() {
-    let args = Args::parse();
-    let pid = Pid::from_raw(args.pid);
-
-    // (note: amoussa) this is really expensive and probably should have a flag to skip it
-    let mut sockets: HashMap<u64, HashMap<i32, Socket>> = HashMap::new();
-    describe_all_open_sockets(&mut sockets)
-        .expect("Failed to parse the open sockets on this process");
-
-    ptrace::attach(pid).unwrap_or_else(|_| panic!("Could not attach to process {}", args.pid));
+fn interrogate_pid_for_block(pid: Pid) {
+    ptrace::attach(pid).unwrap_or_else(|_| panic!("Could not attach to process {}", pid.as_raw()));
     execute_after_stopped(pid, || {
         ptrace::syscall(pid, None).unwrap_or_else(|_| {
-            panic!("Failed to wait for process {} to issue a syscall", args.pid)
+            panic!(
+                "Failed to wait for process {} to issue a syscall",
+                pid.as_raw()
+            )
         });
         execute_after_stopped(pid, || match ptrace::getregs(pid) {
             Ok(regs) => match FromPrimitive::from_u64(regs.orig_rax) {
                 Some(SystemCall::Read) => {
                     let fd =
                         describe_fd(pid, regs.rdi).expect("Failed to get fd stats for process");
-                    println!("process is waiting for a Read operation on file descriptor {} which is a {:?}", regs.rdi, fd.fd_type);
+                    println!("process {} is waiting for a Read operation on file descriptor {} which is a {:?}", pid.as_raw(), regs.rdi, fd.fd_type);
                     if fd.fd_type == FdType::Socket {
-                        // if its a socket, lets find and print more information about it
-                        let socket = sockets.get(&fd.inode).unwrap().get(&pid.as_raw()).unwrap();
+                        let sockets = describe_open_sockets(pid)
+                            .expect("failed to describe sockets for the blocked process");
+                        let socket = sockets
+                            .iter()
+                            .find(|s| s.inode == fd.inode)
+                            .expect("couldn't find a socket with the fd's inode");
                         println!(
-                            "socket is trying to read from ip: {} using {:?}",
-                            socket.remote_ip, socket.s_type
+                            "blocked socket is listening for a message from {}",
+                            socket.remote_ip
                         );
+
+                        match find_all_pids_serving_address(socket.remote_ip) {
+                            Ok(pids) if pids.len() == 1 => {
+                                println!("That IP is being served on this system by {:?}", pids[0]);
+                                interrogate_pid_for_block(Pid::from_raw(pids[0]));
+                            }
+                            _ => (),
+                        }
+                        // if its a socket, lets find and print more information about it
+                        // TODO
                     }
                 }
-                Some(other) => println!("process is waiting for syscall {:?}", other),
+                Some(other) => println!(
+                    "process {} is waiting for syscall {:?}",
+                    pid.as_raw(),
+                    other
+                ),
                 None => println!(
                     "process is waiting for unrecognized syscall with id {}",
                     regs.orig_rax
@@ -271,5 +308,11 @@ fn main() {
         });
     });
     ptrace::detach(pid, None)
-        .unwrap_or_else(|_| panic!("Failed to detach from process {}", args.pid));
+        .unwrap_or_else(|_| panic!("Failed to detach from process {}", pid.as_raw()));
+}
+
+fn main() {
+    let args = Args::parse();
+    let pid = Pid::from_raw(args.pid);
+    interrogate_pid_for_block(pid);
 }

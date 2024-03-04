@@ -8,7 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define PORT 3500
+#define PORT 6969
 
 int main(int argc, char** argv) {
   int n = 3;
