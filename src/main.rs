@@ -50,33 +50,41 @@ fn interrogate_pid_for_block(pid: Pid, addr_to_socket: &HashMap<SocketAddress, S
                     println!("process {} is waiting for a Read operation on file descriptor {} which is a {:?}", pid.as_raw(), regs.rdi, fd.fd_type);
 
                     // if its a socket, handle some special logic
-                    if fd.fd_type == FdType::Socket {
-                        let sockets = describe_open_sockets(pid)
-                            .expect("failed to describe sockets for the blocked process");
-                        let socket = sockets
-                            .iter()
-                            .find(|s| s.inode == fd.inode)
-                            .expect("couldn't find a socket with the fd's inode");
-                        println!(
-                            "blocked socket is listening for a message from {}",
-                            socket.remote_ip
-                        );
+                    match fd.fd_type {
+                        FdType::Socket => {
+                            let sockets = describe_open_sockets(pid)
+                                .expect("failed to describe sockets for the blocked process");
+                            let socket = sockets
+                                .iter()
+                                .find(|s| s.inode == fd.inode)
+                                .expect("couldn't find a socket with the fd's inode");
+                            println!(
+                                "blocked socket is listening for a message from {}",
+                                socket.remote_ip
+                            );
 
-                        // see if this is being served by our machine
-                        match addr_to_socket.get(&socket.remote_ip) {
-                            Some(remote_socket) => {
-                                // run recursively to see why our blocker is blocked
-                                println!(
-                                    "that IP is being served on this machine by PID {}",
-                                    remote_socket.owning_pid
-                                );
-                                interrogate_pid_for_block(
-                                    Pid::from_raw(remote_socket.owning_pid),
-                                    addr_to_socket,
-                                );
+                            // see if this is being served by our machine
+                            match addr_to_socket.get(&socket.remote_ip) {
+                                Some(remote_socket) => {
+                                    // run recursively to see why our blocker is blocked
+                                    println!(
+                                        "that IP is being served on this machine by PID {}",
+                                        remote_socket.owning_pid
+                                    );
+                                    interrogate_pid_for_block(
+                                        Pid::from_raw(remote_socket.owning_pid),
+                                        addr_to_socket,
+                                    );
+                                }
+                                _ => (),
                             }
-                            _ => (),
                         }
+                        FdType::Regular => {
+                            let file_path = get_path_of_regular_fd(pid, regs.rdi)
+                                .expect("Failed to get path of regular file descriptor");
+                            println!("Blocking file is: {}", file_path);
+                        }
+                        _ => (),
                     }
                 }
                 Some(other) => println!(

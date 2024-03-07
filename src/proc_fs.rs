@@ -1,4 +1,4 @@
-use nix::{sys::stat, unistd::Pid};
+use nix::{fcntl::readlink, sys::stat, unistd::Pid};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -7,12 +7,15 @@ use std::io::{prelude::*, BufReader};
 use std::net::Ipv4Addr;
 use std::path::Path;
 
-const IF_SOCKET: u32 = 0o140000;
+const S_IFMT: u32 = 0o170000;
+const S_IFSOCK: u32 = 0o140000;
+const S_IFREG: u32 = 0o100000;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum FdType {
     Unknown,
     Socket,
+    Regular,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -72,17 +75,21 @@ pub fn describe_fd(pid: Pid, fd: u64) -> Option<FileDescriptor> {
     let path = format!("/proc/{}/fd/{}", pid.as_raw(), fd);
     match stat::stat(path.as_str()) {
         Ok(file_stats) => {
-            // TODO: Add actual files to this as those are extremely common blocking ops
-            let fd_type = if file_stats.st_mode & IF_SOCKET == IF_SOCKET {
-                FdType::Socket
-            } else {
-                FdType::Unknown
+            let fd_type = match file_stats.st_mode & S_IFMT {
+                S_IFSOCK => FdType::Socket,
+                S_IFREG => FdType::Regular,
+                _ => FdType::Unknown,
             };
             let inode = file_stats.st_ino;
             Some(FileDescriptor { fd_type, inode })
         }
         Err(_) => None,
     }
+}
+
+pub fn get_path_of_regular_fd(pid: Pid, fd: u64) -> Option<String> {
+    let path = format!("/proc/{}/fd/{}", pid.as_raw(), fd);
+    Some(readlink(path.as_str()).ok()?.into_string().ok()?)
 }
 
 pub fn describe_all_open_sockets() -> Result<HashMap<SocketAddress, Socket>, Box<dyn Error>> {
