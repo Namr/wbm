@@ -41,13 +41,14 @@ fn interrogate_pid_for_block(pid: Pid, addr_to_socket: &HashMap<SocketAddress, S
                 pid.as_raw()
             )
         });
+        print!("Process {} BLOCKED ", pid.as_raw());
         execute_after_stopped(pid, || match ptrace::getregs(pid) {
             Ok(regs) => match FromPrimitive::from_u64(regs.orig_rax) {
                 Some(SystemCall::Read) => {
                     // understand the file descriptor details
                     let fd =
                         describe_fd(pid, regs.rdi).expect("Failed to get fd stats for process");
-                    println!("process {} is waiting for a Read operation on file descriptor {} which is a {:?}", pid.as_raw(), regs.rdi, fd.fd_type);
+                    print!("by READ ");
 
                     // if its a socket, handle some special logic
                     match fd.fd_type {
@@ -58,17 +59,15 @@ fn interrogate_pid_for_block(pid: Pid, addr_to_socket: &HashMap<SocketAddress, S
                                 .iter()
                                 .find(|s| s.inode == fd.inode)
                                 .expect("couldn't find a socket with the fd's inode");
-                            println!(
-                                "blocked socket is listening for a message from {}",
-                                socket.remote_ip
-                            );
+                            print!("on SOCKET (file descriptor {}) which is connected to {}\n", regs.rdi, socket.remote_ip);
 
                             // see if this is being served by our machine
                             match addr_to_socket.get(&socket.remote_ip) {
                                 Some(remote_socket) => {
                                     // run recursively to see why our blocker is blocked
                                     println!(
-                                        "that IP is being served on this machine by PID {}",
+                                        "\t{} is being served on this machine by process {}; Recursing...",
+                                        socket.remote_ip,
                                         remote_socket.owning_pid
                                     );
                                     interrogate_pid_for_block(
@@ -82,18 +81,17 @@ fn interrogate_pid_for_block(pid: Pid, addr_to_socket: &HashMap<SocketAddress, S
                         FdType::Regular => {
                             let file_path = get_path_of_regular_fd(pid, regs.rdi)
                                 .expect("Failed to get path of regular file descriptor");
-                            println!("Blocking file is: {}", file_path);
+                            print!("on REGULAR FILE (file descriptor {}) whose path is {}\n", regs.rdi, file_path);
                         }
                         _ => (),
                     }
                 }
                 Some(other) => println!(
-                    "process {} is waiting for syscall {:?}",
-                    pid.as_raw(),
+                    "on {:?}",
                     other
                 ),
                 None => println!(
-                    "process is waiting for unrecognized syscall with id {}",
+                    "on SYSTEM CALL {}",
                     regs.orig_rax
                 ),
             },
