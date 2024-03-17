@@ -6,6 +6,7 @@ use nix::{
 };
 use num_traits::FromPrimitive;
 use std::collections::{HashMap, HashSet};
+use std::{thread, time::Duration};
 
 mod proc_fs;
 mod unistd_64;
@@ -26,11 +27,29 @@ fn execute_after_stopped(pid: Pid, mut f: impl FnMut() -> ()) {
         Ok(wait::WaitStatus::Stopped(_, _)) => {
             f();
         }
-        _ => panic!(
-            "Process {} changed state but not to a stopped state!",
-            pid.as_raw()
-        ),
+        _ => {
+            ptrace::detach(pid, None)
+                .unwrap_or_else(|_| panic!("Failed to detach from process {}", pid.as_raw()));
+            panic!(
+                "Process {} changed state but not to a stopped state!",
+                pid.as_raw()
+            );
+        }
     }
+}
+
+fn execute_after_stopped_with_no_hang(pid: Pid, mut f: impl FnMut() -> ()) -> bool {
+    for _ in 0..4 {
+        match wait::waitpid(pid, Some(wait::WaitPidFlag::WNOHANG)) {
+            Ok(wait::WaitStatus::Stopped(_, _)) => {
+                f();
+                return true;
+            }
+            _ => {}
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    return false;
 }
 
 fn analyze_syscall(
@@ -109,14 +128,22 @@ fn interrogate_pid_for_block(
                 pid.as_raw()
             )
         });
-        print!("Process {} BLOCKED ", pid.as_raw());
-        execute_after_stopped(pid, || match ptrace::getregs(pid) {
-            Ok(regs) => analyze_syscall(pid, regs, addr_to_socket, previously_interrogated_pids),
+        print!("Process {} ", pid.as_raw());
+        let did_syscall = execute_after_stopped_with_no_hang(pid, || match ptrace::getregs(pid) {
+            Ok(regs) => {
+                print!("BLOCKED ");
+                analyze_syscall(pid, regs, addr_to_socket, previously_interrogated_pids)
+            }
             Err(errno) => println!("Get registers from process failed with code {}", errno),
         });
+
+        if !did_syscall {
+            println!("RUNNING");
+            return;
+        }
+        ptrace::detach(pid, None)
+            .unwrap_or_else(|_| panic!("Failed to detach from process {}", pid.as_raw()));
     });
-    ptrace::detach(pid, None)
-        .unwrap_or_else(|_| panic!("Failed to detach from process {}", pid.as_raw()));
 }
 
 fn main() {
