@@ -59,7 +59,7 @@ fn analyze_syscall(
     previously_interrogated_pids: &mut HashSet<i32>,
 ) {
     match FromPrimitive::from_u64(regs.orig_rax) {
-        Some(SystemCall::Read) => {
+        Some(SystemCall::Read) | Some(SystemCall::Recvfrom) => {
             // understand the file descriptor details
             let fd = describe_fd(pid, regs.rdi).expect("Failed to get fd stats for process");
             print!("by READ ");
