@@ -71,6 +71,27 @@ impl fmt::Display for SocketAddress {
     }
 }
 
+pub fn get_thread_ids_for_pid(pid: Pid) -> Result<Vec<Pid>, Box<dyn Error>> {
+    let mut tids: Vec<Pid> = vec![];
+    let path = format!("/proc/{}/task/", pid.as_raw());
+    let process_dir_paths = read_dir(path)?;
+    for maybe_path in process_dir_paths {
+        let path = maybe_path?;
+        let path_str = path
+            .file_name()
+            .into_string()
+            .or(Err(Box::new(OsStringConvertError {})))?;
+        if path.file_type()?.is_dir() {
+            let tid = path_str.parse::<i32>();
+            let Ok(tid) = tid else {
+                continue;
+            };
+            tids.push(Pid::from_raw(tid));
+        }
+    }
+    Ok(tids)
+}
+
 pub fn describe_fd(pid: Pid, fd: u64) -> Option<FileDescriptor> {
     let path = format!("/proc/{}/fd/{}", pid.as_raw(), fd);
     match stat::stat(path.as_str()) {

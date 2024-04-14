@@ -3,3 +3,4 @@
 test_programs/client
 test_programs/server
 test_programs/runner
+test_programs/multithreaded_server
