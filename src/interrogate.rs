@@ -32,11 +32,9 @@ pub struct RegularFileBlockInfo {
     pub file_path: String,
 }
 
-pub fn execute_after_stopped(pid: Pid, mut f: impl FnMut() -> ()) {
+pub fn wait_for_stop(pid: Pid) {
     match wait::waitpid(pid, None) {
-        Ok(wait::WaitStatus::Stopped(_, _)) => {
-            f();
-        }
+        Ok(wait::WaitStatus::Stopped(_, _)) => (),
         _ => {
             ptrace::detach(pid, None)
                 .unwrap_or_else(|_| panic!("Failed to detach from process {}", pid.as_raw()));
@@ -48,18 +46,16 @@ pub fn execute_after_stopped(pid: Pid, mut f: impl FnMut() -> ()) {
     }
 }
 
-pub fn execute_after_stopped_with_no_hang(pid: Pid, mut f: impl FnMut() -> ()) -> bool {
+pub fn check_if_blocked(pid: Pid) -> bool {
     for _ in 0..4 {
-        match wait::waitpid(pid, Some(wait::WaitPidFlag::WNOHANG)) {
-            Ok(wait::WaitStatus::Stopped(_, _)) => {
-                f();
-                return true;
-            }
-            _ => {}
+        if let Ok(wait::WaitStatus::Stopped(_, _)) =
+            wait::waitpid(pid, Some(wait::WaitPidFlag::WNOHANG))
+        {
+            return true;
         }
         thread::sleep(Duration::from_millis(100));
     }
-    return false;
+    false
 }
 
 pub fn analyze_syscall(
@@ -96,7 +92,7 @@ pub fn analyze_syscall(
                             }),
                         };
                     } else {
-                        return ProcessState::BlockedOnClosedSocket(regs.rdi);
+                        ProcessState::BlockedOnClosedSocket(regs.rdi)
                     }
                 }
                 FdType::Regular => {
@@ -125,20 +121,21 @@ pub fn interrogate_pid_for_block(
 ) -> ProcessState {
     let mut state = ProcessState::Running;
     ptrace::attach(tid).unwrap_or_else(|_| panic!("Could not attach to process {}", tid.as_raw()));
-    execute_after_stopped(tid, || {
-        ptrace::syscall(tid, None).unwrap_or_else(|_| {
-            panic!(
-                "Failed to wait for process {} to issue a syscall",
-                tid.as_raw()
-            )
-        });
-        execute_after_stopped_with_no_hang(tid, || match ptrace::getregs(tid) {
+    wait_for_stop(tid);
+    ptrace::syscall(tid, None).unwrap_or_else(|_| {
+        panic!(
+            "Failed to wait for process {} to issue a syscall",
+            tid.as_raw()
+        )
+    });
+
+    if check_if_blocked(tid) {
+        match ptrace::getregs(tid) {
             Ok(regs) => state = analyze_syscall(pid, regs, addr_to_socket),
             Err(errno) => panic!("Get registers from process failed with code {}", errno),
-        });
+        }
+    }
 
-        ptrace::detach(tid, None)
-            .unwrap_or_else(|_| panic!("Failed to detach from process {}", tid.as_raw()));
-    });
+    let _ = ptrace::detach(tid, None);
     state
 }

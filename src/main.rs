@@ -44,7 +44,10 @@ fn print_process_state(process_state: &ProcessState) {
             }
         }
         ProcessState::BlockedOnClosedSocket(fd) => {
-            print!("is blocked on a socket that no longer exists (fd {})", fd)
+            print!(
+                "is blocked on a socket that is no longer connected (fd {})",
+                fd
+            )
         }
     }
     println!();
@@ -57,13 +60,13 @@ fn interrogate_print_recurse(
 ) {
     previously_interrogated_pids.insert(pid.as_raw());
 
-    let tids = get_thread_ids_for_pid(pid).unwrap_or(vec![]);
+    let tids = get_thread_ids_for_pid(pid).unwrap_or_default();
 
     let mut recursable_pids: Vec<Pid> = vec![];
 
     // we want to format non-multithreaded outputs differently
     if tids.len() <= 1 {
-        let process_state = interrogate_pid_for_block(pid, pid, &addr_to_socket);
+        let process_state = interrogate_pid_for_block(pid, pid, addr_to_socket);
         print!("Process {} ", pid.as_raw());
         print_process_state(&process_state);
         if let ProcessState::BlockedOnSocketRead(info) = process_state {
@@ -74,7 +77,7 @@ fn interrogate_print_recurse(
     } else {
         println!("Process {} is multithreaded.", pid.as_raw());
         for tid in tids {
-            let process_state = interrogate_pid_for_block(pid, tid, &addr_to_socket);
+            let process_state = interrogate_pid_for_block(pid, tid, addr_to_socket);
             print!("\tThread {} ", tid.as_raw());
             print_process_state(&process_state);
             if let ProcessState::BlockedOnSocketRead(info) = process_state {

@@ -25,6 +25,7 @@ pub struct FileDescriptor {
 }
 
 #[derive(Debug, Copy, Clone)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum SocketType {
     TCP,
     UDP,
@@ -110,7 +111,7 @@ pub fn describe_fd(pid: Pid, fd: u64) -> Option<FileDescriptor> {
 
 pub fn get_path_of_regular_fd(pid: Pid, fd: u64) -> Option<String> {
     let path = format!("/proc/{}/fd/{}", pid.as_raw(), fd);
-    Some(readlink(path.as_str()).ok()?.into_string().ok()?)
+    readlink(path.as_str()).ok()?.into_string().ok()
 }
 
 pub fn describe_all_open_sockets() -> Result<HashMap<SocketAddress, Socket>, Box<dyn Error>> {
@@ -149,11 +150,12 @@ pub fn describe_all_open_sockets() -> Result<HashMap<SocketAddress, Socket>, Box
                     continue;
                 };
                 let maybe_fd = describe_fd(pid, fd);
+
                 // if the fd is a socket, add it to our map
                 if maybe_fd.is_some() && maybe_fd.unwrap().fd_type == FdType::Socket {
-                    match sockets.iter().find(|s| s.inode == maybe_fd.unwrap().inode) {
-                        Some(sock) => drop(open_sockets.insert(sock.local_ip, *sock)),
-                        _ => (),
+                    if let Some(sock) = sockets.iter().find(|s| s.inode == maybe_fd.unwrap().inode)
+                    {
+                        open_sockets.insert(sock.local_ip, *sock);
                     }
                 }
             }
