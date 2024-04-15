@@ -3,12 +3,13 @@ import sys
 import socket
 
 PORT = 6800
-MSG = b'ping\x00'
+MSG = b"ping\x00"
 EXPECTED_LEN = len(MSG)
+
 
 def main(n: int):
     serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    serversocket.bind(('localhost', PORT))
+    serversocket.bind(("localhost", PORT))
     serversocket.listen(1)
 
     while True:
@@ -24,8 +25,9 @@ def main(n: int):
                 chunk = client_socket.recv(EXPECTED_LEN)
                 bytes_read += len(chunk)
                 chunks.append(chunk)
-            recv_msg = b''.join(chunks)
+            recv_msg = b"".join(chunks)
             print(recv_msg)
+
 
 if __name__ == "__main__":
     n = 3
