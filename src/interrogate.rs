@@ -47,13 +47,13 @@ pub fn wait_for_stop(pid: Pid) {
 }
 
 pub fn check_if_blocked(pid: Pid) -> bool {
-    for _ in 0..4 {
+    for _ in 0..2 {
         if let Ok(wait::WaitStatus::Stopped(_, _)) =
             wait::waitpid(pid, Some(wait::WaitPidFlag::WNOHANG))
         {
             return true;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(50));
     }
     false
 }
@@ -106,6 +106,7 @@ pub fn analyze_syscall(
                 _ => ProcessState::BlockedOnOtherSyscall(SystemCall::Read),
             }
         }
+        Some(SystemCall::RestartSyscall) => ProcessState::Running,
         Some(other) => ProcessState::BlockedOnOtherSyscall(other),
         None => ProcessState::BlockedOnOtherSyscall(
             SystemCall::from_u64(regs.orig_rax)
