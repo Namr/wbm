@@ -11,11 +11,19 @@ use interrogate::*;
 use proc_fs::*;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about = "Who's Blocking Me? A Command Line Deadlock Analyzer.",
+    long_about = "wbm will check to see if a process is being blocked by a system call. If that system call is a socket read from a locally served IP, it will recusively run on the socket's host."
+)]
 struct Args {
     // PID of the process to investigate
-    #[arg(short)]
+    #[arg(short = 'p', long)]
     pid: i32,
+
+    // Whether or not to recursively interrogate local blocking proccesses
+    #[arg(short = 'n', long)]
+    no_recurse: bool,
 }
 
 fn main() {
@@ -25,7 +33,12 @@ fn main() {
     let addr_to_socket =
         describe_all_open_sockets().expect("could not read global socket information from /proc");
 
-    interrogate_print_recurse(pid, &addr_to_socket, &mut previously_interrogated_pids);
+    interrogate_print_recurse(
+        pid,
+        &addr_to_socket,
+        &mut previously_interrogated_pids,
+        !args.no_recurse,
+    );
 }
 
 fn print_process_state(process_state: &ProcessState) {
@@ -66,6 +79,7 @@ fn interrogate_print_recurse(
     pid: Pid,
     addr_to_socket: &HashMap<SocketAddress, Socket>,
     previously_interrogated_pids: &mut HashSet<i32>,
+    recurse: bool,
 ) {
     previously_interrogated_pids.insert(pid.as_raw());
 
@@ -100,7 +114,8 @@ fn interrogate_print_recurse(
         }
     }
 
-    if !recursable_pids.is_empty()
+    if recurse
+        && !recursable_pids.is_empty()
         && !previously_interrogated_pids.contains(&recursable_pids.first().unwrap().as_raw())
     {
         // TODO: allow for some selection mechanism if n > 1
@@ -112,6 +127,7 @@ fn interrogate_print_recurse(
             *recursable_pids.first().unwrap(),
             addr_to_socket,
             previously_interrogated_pids,
+            recurse,
         );
     }
 }
