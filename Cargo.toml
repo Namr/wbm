@@ -11,3 +11,4 @@ clap_derive = { version = "4.0" }
 nix = { version = "0.28.0", features = ["ptrace", "fs"] }
 num-traits = "0.2"
 num-derive = "0.4"
+colored = "2.1.0"

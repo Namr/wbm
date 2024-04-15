@@ -1,4 +1,5 @@
 use clap::Parser;
+use colored::Colorize;
 use nix::unistd::Pid;
 use std::collections::{HashMap, HashSet};
 
@@ -29,24 +30,32 @@ fn main() {
 
 fn print_process_state(process_state: &ProcessState) {
     match process_state {
-        ProcessState::Running => print!("is Running unblocked"),
+        ProcessState::Running => print!("is {}", "RUNNING".bright_green()),
         ProcessState::BlockedOnOtherSyscall(syscall) => {
-            print!("is blocked on system call {:?}", syscall)
+            print!(
+                "is {} on system call {}",
+                "BLOCKED".red(),
+                syscall.to_string().green()
+            )
         }
         ProcessState::BlockedOnRegularFileRead(info) => {
-            print!("is blocked reading from file {}", info.file_path)
+            print!(
+                "is {} reading from file {}",
+                "BLOCKED".red(),
+                info.file_path.green()
+            )
         }
         ProcessState::BlockedOnSocketRead(info) => {
             if let Some(owning_pid) = info.owning_pid {
-                print!("is blocked reading from a socket connected to {}, which is served locally by process {}", info.remote_ip, owning_pid)
+                print!("is {} reading from a socket connected to {}, which is served locally by process {}", "BLOCKED".red(), info.remote_ip.to_string().green(), owning_pid.to_string().blue())
             } else {
-                print!("is blocked reading from a socket connected to {}, which is served on a remote machine", info.remote_ip)
+                print!("is blocked reading from a socket connected to {}, which is served on a remote machine", info.remote_ip.to_string().green())
             }
         }
         ProcessState::BlockedOnClosedSocket(fd) => {
             print!(
                 "is blocked on a socket that is no longer connected (fd {})",
-                fd
+                fd.to_string().green()
             )
         }
     }
@@ -67,7 +76,7 @@ fn interrogate_print_recurse(
     // we want to format non-multithreaded outputs differently
     if tids.len() <= 1 {
         let process_state = interrogate_pid_for_block(pid, pid, addr_to_socket);
-        print!("Process {} ", pid.as_raw());
+        print!("Process {} ", pid.as_raw().to_string().blue());
         print_process_state(&process_state);
         if let ProcessState::BlockedOnSocketRead(info) = process_state {
             if let Some(owning_pid) = info.owning_pid {
@@ -75,10 +84,13 @@ fn interrogate_print_recurse(
             }
         }
     } else {
-        println!("Process {} is multithreaded.", pid.as_raw());
+        println!(
+            "Process {} is multithreaded.",
+            pid.as_raw().to_string().blue()
+        );
         for tid in tids {
             let process_state = interrogate_pid_for_block(pid, tid, addr_to_socket);
-            print!("\tThread {} ", tid.as_raw());
+            print!("\tThread {} ", tid.as_raw().to_string().blue());
             print_process_state(&process_state);
             if let ProcessState::BlockedOnSocketRead(info) = process_state {
                 if let Some(owning_pid) = info.owning_pid {
@@ -94,7 +106,7 @@ fn interrogate_print_recurse(
         // TODO: allow for some selection mechanism if n > 1
         println!(
             "Block is happening on this machine, interrogating process {}",
-            recursable_pids.first().unwrap().as_raw()
+            recursable_pids.first().unwrap().as_raw().to_string().blue()
         );
         interrogate_print_recurse(
             *recursable_pids.first().unwrap(),
