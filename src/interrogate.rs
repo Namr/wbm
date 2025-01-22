@@ -1,4 +1,5 @@
 use nix::{
+    errno::Errno,
     libc::user_regs_struct,
     sys::{ptrace, wait},
     unistd::Pid,
@@ -37,7 +38,7 @@ pub fn wait_for_stop(pid: Pid) {
         Ok(wait::WaitStatus::Stopped(_, _)) => (),
         _ => {
             ptrace::detach(pid, None)
-                .unwrap_or_else(|_| panic!("Failed to detach from process {}", pid.as_raw()));
+                .unwrap_or_else(|e| panic!("Failed to detach from process {}: {e}", pid.as_raw()));
             panic!(
                 "Process {} changed state but not to a stopped state!",
                 pid.as_raw()
@@ -121,11 +122,21 @@ pub fn interrogate_pid_for_block(
     addr_to_socket: &HashMap<SocketAddress, Socket>,
 ) -> ProcessState {
     let mut state = ProcessState::Running;
-    ptrace::attach(tid).unwrap_or_else(|_| panic!("Could not attach to process {}", tid.as_raw()));
+    ptrace::attach(tid).unwrap_or_else(|e| {
+        if e == Errno::EPERM {
+            eprintln!(
+                "Permission denied attaching to {}; try using `sudo` or `sudo setcap cap_sys_ptrace+ep {}`",
+                tid.as_raw(), std::env::current_exe().unwrap_or("wbm".into()).display(),
+            );
+            std::process::exit(1);
+        } else {
+            panic!("Could not attach to process {}: {e}", tid.as_raw())
+        }
+    });
     wait_for_stop(tid);
-    ptrace::syscall(tid, None).unwrap_or_else(|_| {
+    ptrace::syscall(tid, None).unwrap_or_else(|e| {
         panic!(
-            "Failed to wait for process {} to issue a syscall",
+            "Failed to wait for process {} to issue a syscall: {e}",
             tid.as_raw()
         )
     });
